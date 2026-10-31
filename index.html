@@ -338,6 +338,33 @@ footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:w
  .motion-ready .motion-photo .photo-reveal-frame::after{display:none;transition:none}
 }
 
+/* Same editorial gestures, slower entrances and repeatable offscreen resets. */
+:root{
+ --motion-duration-base:800ms;
+ --motion-duration-slow:1000ms;
+ --motion-duration-stat-line:1200ms;
+ --motion-duration-photo:1600ms;
+}
+@media (prefers-reduced-motion:no-preference){
+ .motion-ready .motion-photo .photo{opacity:0}
+ .motion-ready .motion-photo.is-visible .photo{opacity:1}
+ /* Reset instantly only when JS knows the whole target is offscreen.
+    Re-entry then plays the existing forward transition, in either direction. */
+ .motion-ready .motion-item:not(.is-visible),
+ .motion-ready .motion-photo:not(.is-visible) .photo,
+ .motion-ready .motion-photo:not(.is-visible) .photo-reveal-frame::after,
+ .motion-ready .stats li:not(.is-visible) .stat-label::after,
+ .motion-ready .stats li:not(.is-visible)::after,
+ .motion-ready .motion-callout:not(.is-visible) .pullquote-wide,
+ .motion-ready .motion-callout:not(.is-visible) .pullquote-wide::before,
+ .motion-ready .motion-callout:not(.is-visible) .pullquote-wide::after{transition:none}
+ .motion-ready .motion-photo:focus-within .photo{opacity:1;transform:none;transition:none}
+}
+@media (prefers-reduced-motion:reduce),print{
+ .motion-ready .motion-photo .photo{opacity:1;transform:none;transition:none}
+ .motion-ready .motion-photo .photo-reveal-frame::after{display:none;transition:none}
+}
+
 </style>
 </head>
 <body>
@@ -462,7 +489,7 @@ footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:w
   </main>
   <footer class="wide"><span class="footer-brand">Именно</span><span>Персональный подбор подарков</span></footer>
 <script>
-// Optional one-shot accents. The five statistic lines start inside the viewport.
+// Reusable entrances: reveal in the viewport; reset only after fully leaving it.
 (() => {
  const root=document.documentElement;
  const groups=[
@@ -480,18 +507,20 @@ footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:w
   });
  }
  const statRows=new Set(document.querySelectorAll('.stats li'));
- let observer,statsObserver;
- function reveal(el){
-  el.classList.add('is-visible');
-  observer?.unobserve(el);
-  statsObserver?.unobserve(el);
+ const viewportHeight=()=>window.innerHeight || root.clientHeight;
+ const reveal=el=>el.classList.add('is-visible');
+ let observer,resetObserver,active=false;
+ function reset(el,rect,focused=document.activeElement){
+  if(el.contains(focused)) return;
+  if(rect.bottom<=0 || rect.top>=viewportHeight()) el.classList.remove('is-visible');
  }
  function stop(){
+  active=false;
   observer?.disconnect();
-  statsObserver?.disconnect();
-  observer=statsObserver=undefined;
+  resetObserver?.disconnect();
+  observer=resetObserver=undefined;
   root.classList.remove('motion-ready');
-  targets.forEach(el=>el.classList.add('is-visible'));
+  targets.forEach(reveal);
  }
  if(typeof window.matchMedia!=='function'){stop();return;}
  const preference=window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -499,19 +528,31 @@ footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:w
   if(preference.matches || typeof window.IntersectionObserver!=='function'){stop();return;}
   try{
    observer=new window.IntersectionObserver(entries=>{
-    try{entries.forEach(entry=>{if(entry.isIntersecting) reveal(entry.target);});}
-    catch{stop();}
-   },{threshold:.01,rootMargin:'0px 0px 32px 0px'});
-   statsObserver=new window.IntersectionObserver(entries=>{
-    try{entries.forEach(entry=>{
-     // isIntersecting can be true in the initial callback below the threshold.
-     if(entry.isIntersecting && entry.intersectionRatio>=.35) reveal(entry.target);
-    });}catch{stop();}
-   },{threshold:.35,rootMargin:'0px 0px -48px 0px'});
-   const viewport=window.innerHeight || root.clientHeight;
+    if(!active) return;
+    try{
+     entries.forEach(entry=>{
+      const required=statRows.has(entry.target) ? .35 : .01;
+      if(entry.isIntersecting && entry.intersectionRatio>=required) reveal(entry.target);
+     });
+    }catch{stop();}
+   },{threshold:[0,.01,.35],rootMargin:'0px'});
+   // The 32px exit buffer keeps resets outside the visible viewport and
+   // prevents a heading's own 8px entrance transform from retriggering itself.
+   resetObserver=new window.IntersectionObserver(entries=>{
+    if(!active) return;
+    try{
+     entries.forEach(entry=>{
+      if(!entry.isIntersecting) reset(entry.target,entry.boundingClientRect);
+     });
+    }catch{stop();}
+   },{threshold:0,rootMargin:'32px 0px'});
+   active=true;
    targets.forEach(el=>{
-    if(el.classList.contains('is-visible') || el.getBoundingClientRect().top<=viewport+32) reveal(el);
-    else (statRows.has(el)?statsObserver:observer).observe(el);
+    const rect=el.getBoundingClientRect();
+    // Never fade content the visitor was already reading on load/restoration.
+    if(rect.bottom>0 && rect.top<viewportHeight()) reveal(el);
+    observer.observe(el);
+    resetObserver.observe(el);
    });
    root.classList.add('motion-ready');
   }catch{stop();}
@@ -522,6 +563,16 @@ footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:w
  else preference.addListener?.(onPreference);
  document.addEventListener('focusin',event=>{
   targets.forEach(el=>{if(el.contains(event.target)) reveal(el);});
+ });
+ document.addEventListener('focusout',event=>{
+  if(!active) return;
+  try{
+   targets.forEach(el=>{
+    if(el.contains(event.target) && !el.contains(event.relatedTarget)){
+     reset(el,el.getBoundingClientRect(),event.relatedTarget);
+    }
+   });
+  }catch{stop();}
  });
  window.addEventListener('beforeprint',stop);
  window.addEventListener('pageshow',event=>{if(event.persisted) stop();});
